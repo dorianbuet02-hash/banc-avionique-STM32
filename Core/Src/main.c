@@ -22,29 +22,25 @@
   */
 /* USER CODE END Header */
 
-/* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "fatfs.h"
 
-/* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
+#include "servo_pwm.h"
 #include "oled.h"
 #include "bmp280.h"
 #include "icm20948.h"
 /* USER CODE END Includes */
 
-/* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 /* USER CODE END PTD */
 
-/* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 /* USER CODE END PD */
 
-/* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
 /* USER CODE END PM */
 
@@ -52,26 +48,22 @@
 ADC_HandleTypeDef  hadc1;
 I2C_HandleTypeDef  hi2c1;
 SPI_HandleTypeDef  hspi1;
-TIM_HandleTypeDef  htim2;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
 volatile uint8_t enregistrement_actif = 1;
 /* USER CODE END PV */
 
-/* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_USART2_UART_Init(void);
-static void MX_TIM2_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_ADC1_Init(void);
 
 /* USER CODE BEGIN PFP */
 /* USER CODE END PFP */
 
-/* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
 /* --------------------------------------------------------------------------
@@ -87,24 +79,7 @@ void myprintf(const char *fmt, ...) {
 }
 
 /* --------------------------------------------------------------------------
- * FP4 – Commande du servomoteur : mapping lacet -> impulsion PWM
- *        [-45°, +45°] -> [1000 µs, 2000 µs] via registre TIM2->CCR1
- * -------------------------------------------------------------------------- */
-void Mettre_A_Jour_Servomoteur(float angle_lacet) {
-    if (angle_lacet >  45.0f) angle_lacet =  45.0f;
-    if (angle_lacet < -45.0f) angle_lacet = -45.0f;
-
-    uint32_t impulsion_us = (uint32_t)((angle_lacet * 11.11f) + 1500.0f);
-
-    if (impulsion_us > 2000) impulsion_us = 2000;
-    if (impulsion_us < 1000) impulsion_us = 1000;
-
-    TIM2->CCR1 = impulsion_us;
-}
-
-/* --------------------------------------------------------------------------
  * FP3 – Construction de la trame ARINC 429 (32 bits, parite impaire)
- *        Label 256 octal, SDI=0, SSM=0, donnee = pression en hPa
  * -------------------------------------------------------------------------- */
 uint32_t Construire_Trame_ARINC(float pression_hPa) {
     uint32_t trame = 0;
@@ -126,8 +101,6 @@ uint32_t Construire_Trame_ARINC(float pression_hPa) {
 
 /* --------------------------------------------------------------------------
  * FP3 – Transmission physique BPRZ par bit-banging
- *        12,5 kbps : 40 µs etat actif + 40 µs retour a zero par bit
- *        Calibre pour SYSCLK = 32 MHz
  * -------------------------------------------------------------------------- */
 void delay_us(uint32_t us) {
     uint32_t count = us * (32 / 4);
@@ -156,10 +129,6 @@ void Envoyer_ARINC_Physique(uint32_t trame) {
 
 /* USER CODE END 0 */
 
-/**
-  * @brief  The application entry point.
-  * @retval int
-  */
 int main(void)
 {
   /* USER CODE BEGIN 1 */
@@ -178,7 +147,6 @@ int main(void)
   MX_GPIO_Init();
   MX_I2C1_Init();
   MX_USART2_UART_Init();
-  MX_TIM2_Init();
   MX_SPI1_Init();
   MX_FATFS_Init();
   MX_ADC1_Init();
@@ -201,9 +169,8 @@ int main(void)
   sprintf(msg, "--- Fin du Scan ---\r\n\n");
   HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
 
-  /* --- FP4 : Demarrage du PWM via registres directs ---------------------- */
-  TIM2->CCER |= TIM_CCER_CC1E;
-  TIM2->CR1  |= TIM_CR1_CEN;
+  /* --- FP4 : Initialisation PWM par registres directs -------------------- */
+  PWM_Servo_Init();
 
   /* --- FP1 : Calibration gyroscopique (ICM-20948) ------------------------ */
   OLED_WriteString("--- BANC AVIONIQUE ---", 0, 0);
@@ -219,11 +186,11 @@ int main(void)
 
   /* USER CODE END 2 */
 
-  /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
   /* USER CODE END WHILE */
+
   /* USER CODE BEGIN 3 */
 
     char ligne[30];
@@ -313,13 +280,9 @@ int main(void)
     Envoyer_ARINC_Physique(mot_arinc);
 
   /* USER CODE END 3 */
-  }
-}
+  }  /* <-- accolade fermante du while(1) */
+}    /* <-- accolade fermante du main()   */
 
-/**
-  * @brief System Clock Configuration
-  * @retval None
-  */
 void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
@@ -331,7 +294,7 @@ void SystemClock_Config(void)
   HAL_PWR_EnableBkUpAccess();
   __HAL_RCC_LSEDRIVE_CONFIG(RCC_LSEDRIVE_LOW);
 
-  RCC_OscInitStruct.OscillatorType      = RCC_OSCILLATORTYPE_LSE | RCC_OSCILLATORTYPE_MSI;
+  RCC_OscInitStruct.OscillatorType      = RCC_OSCILLATORTYPE_LSE|RCC_OSCILLATORTYPE_MSI;
   RCC_OscInitStruct.LSEState            = RCC_LSE_ON;
   RCC_OscInitStruct.MSIState            = RCC_MSI_ON;
   RCC_OscInitStruct.MSICalibrationValue = 0;
@@ -346,8 +309,8 @@ void SystemClock_Config(void)
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
     Error_Handler();
 
-  RCC_ClkInitStruct.ClockType      = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK
-                                   | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.ClockType      = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                                   |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource   = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider  = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
@@ -358,9 +321,6 @@ void SystemClock_Config(void)
   HAL_RCCEx_EnableMSIPLLMode();
 }
 
-/**
-  * @brief ADC1 Initialization Function
-  */
 static void MX_ADC1_Init(void)
 {
   /* USER CODE BEGIN ADC1_Init 0 */
@@ -402,9 +362,6 @@ static void MX_ADC1_Init(void)
   /* USER CODE END ADC1_Init 2 */
 }
 
-/**
-  * @brief I2C1 Initialization Function
-  */
 static void MX_I2C1_Init(void)
 {
   /* USER CODE BEGIN I2C1_Init 0 */
@@ -434,9 +391,6 @@ static void MX_I2C1_Init(void)
   /* USER CODE END I2C1_Init 2 */
 }
 
-/**
-  * @brief SPI1 Initialization Function
-  */
 static void MX_SPI1_Init(void)
 {
   /* USER CODE BEGIN SPI1_Init 0 */
@@ -465,58 +419,6 @@ static void MX_SPI1_Init(void)
   /* USER CODE END SPI1_Init 2 */
 }
 
-/**
-  * @brief TIM2 Initialization Function
-  */
-static void MX_TIM2_Init(void)
-{
-  /* USER CODE BEGIN TIM2_Init 0 */
-  /* USER CODE END TIM2_Init 0 */
-
-  TIM_ClockConfigTypeDef  sClockSourceConfig = {0};
-  TIM_MasterConfigTypeDef sMasterConfig      = {0};
-  TIM_OC_InitTypeDef      sConfigOC          = {0};
-
-  /* USER CODE BEGIN TIM2_Init 1 */
-  /* USER CODE END TIM2_Init 1 */
-
-  htim2.Instance               = TIM2;
-  htim2.Init.Prescaler         = 32 - 1;
-  htim2.Init.CounterMode       = TIM_COUNTERMODE_UP;
-  htim2.Init.Period            = 20000 - 1;
-  htim2.Init.ClockDivision     = TIM_CLOCKDIVISION_DIV1;
-  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
-    Error_Handler();
-
-  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
-    Error_Handler();
-
-  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
-    Error_Handler();
-
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-  sMasterConfig.MasterSlaveMode     = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
-    Error_Handler();
-
-  sConfigOC.OCMode     = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse      = 0;
-  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-    Error_Handler();
-
-  /* USER CODE BEGIN TIM2_Init 2 */
-  /* USER CODE END TIM2_Init 2 */
-
-  HAL_TIM_MspPostInit(&htim2);
-}
-
-/**
-  * @brief USART2 Initialization Function
-  */
 static void MX_USART2_UART_Init(void)
 {
   /* USER CODE BEGIN USART2_Init 0 */
@@ -541,13 +443,9 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE END USART2_Init 2 */
 }
 
-/**
-  * @brief GPIO Initialization Function
-  */
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
-
   /* USER CODE BEGIN MX_GPIO_Init_1 */
   /* USER CODE END MX_GPIO_Init_1 */
 
@@ -555,11 +453,11 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
-  HAL_GPIO_WritePin(GPIOA, ARINC_A_Pin | ARINC_B_Pin, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(GPIOB, LED_ROULIS_Pin | LED_TANGAGE_Pin | LD3_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, ARINC_A_Pin|ARINC_B_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, LED_ROULIS_Pin|LED_TANGAGE_Pin|LD3_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(SD_CS_GPIO_Port, SD_CS_Pin, GPIO_PIN_SET);
 
-  GPIO_InitStruct.Pin   = ARINC_A_Pin | ARINC_B_Pin;
+  GPIO_InitStruct.Pin   = ARINC_A_Pin|ARINC_B_Pin;
   GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull  = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -570,7 +468,7 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(BOUTON_GPIO_Port, &GPIO_InitStruct);
 
-  GPIO_InitStruct.Pin   = LED_ROULIS_Pin | LED_TANGAGE_Pin | LD3_Pin | SD_CS_Pin;
+  GPIO_InitStruct.Pin   = LED_ROULIS_Pin|LED_TANGAGE_Pin|LD3_Pin|SD_CS_Pin;
   GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull  = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -602,9 +500,6 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 
 /* USER CODE END 4 */
 
-/**
-  * @brief  This function is executed in case of error occurrence.
-  */
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
